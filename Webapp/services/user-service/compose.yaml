@@ -1,0 +1,65 @@
+services:
+  db:
+    # PostgreSQL database for the User Service.
+    # Pin the major version so upgrades are intentional.
+    image: postgres:17
+
+    # Give the container a predictable name for this learning project.
+    container_name: car-rental-user-db
+
+    # Restart automatically unless we intentionally stop it.
+    restart: unless-stopped
+
+    environment:
+      # PostgreSQL creates this database on first initialization.
+      POSTGRES_DB: car_rental
+
+      # Local development database credentials.
+      # These are intentionally simple LOCAL-ONLY credentials.
+      POSTGRES_USER: car_app
+      POSTGRES_PASSWORD: local_dev_only
+
+    ports:
+      # HOST:CONTAINER
+      #
+      # PostgreSQL runs on 5432 inside the container.
+      # We expose it as 5433 on this Windows machine.
+      #
+      # Binding to 127.0.0.1 prevents other machines on the
+      # network from connecting directly to this database.
+      - "127.0.0.1:5433:5432"
+
+    volumes:
+      # Store PostgreSQL data outside the container.
+      #
+      # This allows database data to survive normal
+      # container removal/recreation.
+      - pg_user_data:/var/lib/postgresql/data
+
+    healthcheck:
+      # Ask PostgreSQL whether it is ready to accept connections.
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U car_app -d car_rental"
+        ]
+
+      # Run the health check every 5 seconds.
+      interval: 5s
+
+      # Allow each check up to 5 seconds.
+      timeout: 5s
+
+      # Mark unhealthy after 10 consecutive failures.
+      retries: 10
+
+      # Give PostgreSQL some startup time before failures count.
+      start_period: 10s
+
+
+# =========================================================
+# DOCKER VOLUMES
+# =========================================================
+
+volumes:
+  pg_user_data:
