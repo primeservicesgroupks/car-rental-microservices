@@ -1,0 +1,645 @@
+Turo-Style Car Rental Web App Using Microservices
+===================================================
+
+PROJECT GOAL
+------------
+Build a car-rental marketplace similar to Turo using microservices. The first version will be smaller than Turo but designed so it can grow.
+
+1. SIMPLE ARCHITECTURE SUMMARY
+------------------------------
+Think of the platform as several small applications working together instead of one giant application.
+
+Users -> Web/Mobile Frontend -> API Gateway/Load Balancer -> Microservices
+
+Core services:
+- Auth/User Service
+- Vehicle Service
+- Search Service
+- Booking Service
+- Payment Service
+- Notification Service
+
+Each microservice owns one main business responsibility and ideally its own data.
+
+Benefits:
+- Services can be developed independently.
+- Services can scale independently.
+- A failure in one service does not necessarily take down the entire platform.
+- Easier to deploy and maintain individual components.
+
+2. CUSTOMER FEATURES
+--------------------
+Renter:
+- Create account and sign in.
+- Search available vehicles.
+- Filter by location, dates, price, and vehicle type.
+- View vehicle details and pictures.
+- Select pickup and return dates.
+- Calculate rental price.
+- Book vehicle.
+- Pay.
+- View upcoming and previous rentals.
+- Cancel eligible reservations.
+- Receive confirmations.
+- Review vehicle after rental.
+
+Vehicle Owner:
+- Register as an owner.
+- Add vehicle.
+- Upload pictures.
+- Set daily rental price.
+- Set availability.
+- Block dates.
+- View reservations.
+- Manage rentals.
+- View earnings.
+
+Features to postpone:
+- Insurance underwriting.
+- Driver-record verification.
+- Advanced dynamic pricing.
+- Roadside assistance.
+- Claims processing.
+- Advanced fraud detection.
+
+3. CORE MICROSERVICES
+---------------------
+Auth/User Service:
+- Accounts
+- Profiles
+- Login
+- Roles
+
+Vehicle Service:
+- Vehicle information
+- Pictures
+- Pricing
+- Vehicle status
+
+Search Service:
+- Search and filtering
+- Available vehicle discovery
+
+Booking Service:
+- Reservations
+- Date availability
+- Booking lifecycle
+
+Payment Service:
+- Payments
+- Refunds
+- Transaction status
+
+Notification Service:
+- Email/SMS/event notifications
+
+Possible future services:
+- Review Service
+- Owner/Payout Service
+- Pricing Service
+- Location Service
+- Insurance Service
+- Fraud Service
+- Analytics Service
+- Support Service
+
+4. RECOMMENDED TECHNOLOGY STACK
+-------------------------------
+Frontend:
+- Next.js
+- React
+- TypeScript
+
+Backend:
+- Python
+- FastAPI
+
+Database:
+- PostgreSQL
+
+Object storage:
+- Amazon S3 for vehicle images
+
+Caching:
+- Redis
+
+Containers:
+- Docker
+- Docker Compose
+
+Cloud:
+- AWS
+
+Infrastructure as Code:
+- Terraform
+
+Container orchestration:
+- Kubernetes
+- Amazon EKS
+
+CI/CD:
+- GitHub Actions
+- Amazon ECR
+- Amazon EKS
+
+Messaging:
+- Amazon SQS
+- Amazon SNS
+- Amazon EventBridge
+
+Monitoring:
+- Amazon CloudWatch
+- Prometheus
+- Grafana
+- OpenTelemetry
+
+5. REPOSITORY STRUCTURE
+-----------------------
+car-rental-platform/
+
+├── frontend/
+├── services/
+│   ├── user-service/
+│   ├── vehicle-service/
+│   ├── search-service/
+│   ├── booking-service/
+│   ├── payment-service/
+│   └── notification-service/
+├── infrastructure/
+│   ├── terraform/
+│   └── kubernetes/
+├── docker/
+├── scripts/
+├── docs/
+│   ├── architecture/
+│   └── api/
+├── .github/
+│   └── workflows/
+└── README.md
+
+6. DATABASE DESIGN
+------------------
+Avoid one giant database shared by every service.
+
+User Service -> Users DB
+Vehicle Service -> Vehicles DB
+Booking Service -> Bookings DB
+Payment Service -> Payments DB
+
+Initially, the databases can run on the same PostgreSQL server while remaining logically separated.
+
+Vehicle pictures:
+Vehicle Service -> Amazon S3 -> Vehicle Images
+
+7. EXAMPLE USER JOURNEY
+-----------------------
+User searches for:
+Location: Kansas City
+Pickup: Oct 10
+Return: Oct 13
+
+Flow:
+Browser
+  -> API Gateway
+  -> Search Service
+  -> Vehicle Service
+  -> Booking Service
+
+Results might include:
+- 2019 Toyota Camry - $48/day
+- 2021 Honda Accord - $55/day
+- 2020 Toyota Corolla - $43/day
+
+8. BOOKING FLOW
+---------------
+User clicks "Book Now"
+
+Booking Service
+  -> Check vehicle with Vehicle Service
+  -> Check availability
+  -> Calculate/confirm booking
+  -> Payment Service
+  -> Payment provider
+  -> Booking confirmed
+  -> Notification Service
+  -> Confirmation sent
+
+Important distributed-system problem:
+What happens if payment succeeds but the Booking Service crashes?
+
+Later solutions:
+- Events
+- Message queues
+- Idempotency
+- Retries
+- Saga pattern
+
+9. SERVICE COMMUNICATION
+------------------------
+Synchronous communication:
+- REST APIs
+- One service calls another and waits for a response.
+
+Examples:
+GET /vehicles/123
+POST /bookings
+
+Asynchronous communication:
+Booking Service
+  -> BookingCreated event
+  -> Message Queue
+  -> Notification Service
+  -> Analytics Service
+  -> Owner Service
+
+AWS technologies:
+- SQS
+- SNS
+- EventBridge
+
+10. AUTHENTICATION
+------------------
+Users should authenticate once rather than separately with every service.
+
+Flow:
+User
+  -> Authentication
+  -> JWT token
+  -> Frontend
+  -> API layer
+  -> Microservices
+
+Roles:
+- RENTER
+- OWNER
+- ADMIN
+
+Initially:
+- FastAPI JWT authentication.
+
+Later on AWS:
+- Amazon Cognito can be considered.
+
+11. DOCKER
+----------
+Each microservice gets its own Dockerfile and container image.
+
+Examples:
+- user-service:1.0
+- vehicle-service:1.0
+- booking-service:1.0
+- payment-service:1.0
+- notification-service:1.0
+
+Local environment:
+docker compose up
+
+Docker Compose can run:
+- Frontend
+- User Service
+- Vehicle Service
+- Search Service
+- Booking Service
+- Payment Service
+- Notification Service
+- PostgreSQL
+- Redis
+
+12. KUBERNETES
+--------------
+After the application works in Docker, move it to Kubernetes.
+
+Kubernetes provides:
+- Scaling
+- Self-healing
+- Rolling deployments
+- Service discovery
+- Load balancing
+- Configuration management
+- Secrets management
+
+AWS production target:
+Internet
+  -> AWS Load Balancer
+  -> Amazon EKS
+  -> Microservice Pods
+  -> RDS / S3 / SQS / Redis
+
+13. CI/CD
+---------
+Development flow:
+
+Developer
+  -> GitHub
+  -> GitHub Actions
+     -> Test
+     -> Security scan
+     -> Build Docker image
+  -> Amazon ECR
+  -> Amazon EKS
+
+Eventually a git push can automatically trigger testing, image creation, and deployment.
+
+14. OBSERVABILITY
+-----------------
+Track:
+- API requests
+- API latency
+- HTTP errors
+- Failed bookings
+- Failed payments
+- CPU
+- Memory
+- Container restarts
+- Database connections
+
+Tools:
+- CloudWatch
+- Prometheus
+- Grafana
+- OpenTelemetry
+
+15. DETAILED BUILD PLAN
+-----------------------
+PHASE 1 - Architecture and Repository
+- Define MVP requirements.
+- Define service boundaries.
+- Create system architecture.
+- Create repository.
+- Create folder structure.
+- Define API endpoints.
+- Define database schemas.
+- Define local development environment.
+
+Main entities:
+- User
+- Vehicle
+- VehicleImage
+- Availability
+- Booking
+- Payment
+- Review
+- Notification
+
+PHASE 2 - User Service
+Build endpoints:
+POST /users
+GET /users/{id}
+PUT /users/{id}
+GET /users/{id}/profile
+
+User database fields:
+- id
+- first_name
+- last_name
+- email
+- phone
+- password_hash
+- role
+- created_at
+
+Learn:
+- FastAPI
+- Pydantic
+- SQLAlchemy
+- PostgreSQL
+- REST APIs
+- Validation
+
+PHASE 3 - Vehicle Service
+Endpoints:
+POST /vehicles
+GET /vehicles
+GET /vehicles/{id}
+PUT /vehicles/{id}
+DELETE /vehicles/{id}
+
+Vehicle fields:
+- id
+- owner_id
+- make
+- model
+- year
+- color
+- license_plate
+- daily_rate
+- location
+- status
+
+Example:
+{
+  "make": "Toyota",
+  "model": "Camry",
+  "year": 2020,
+  "daily_rate": 55,
+  "location": "Kansas City"
+}
+
+Then add image upload to Amazon S3.
+
+PHASE 4 - Booking Service
+Booking fields:
+- booking_id
+- user_id
+- vehicle_id
+- start_date
+- end_date
+- daily_rate
+- total
+- status
+- created_at
+
+Booking lifecycle:
+PENDING -> CONFIRMED -> ACTIVE -> COMPLETED
+
+Possible cancellation paths:
+PENDING -> CANCELLED
+CONFIRMED -> CANCELLED
+
+Critical requirement:
+Prevent two renters from booking the same vehicle for overlapping dates.
+
+PHASE 5 - Search Service
+Search/filter by:
+- Location
+- Pickup date
+- Return date
+- Make
+- Model
+- Price
+- Vehicle type
+
+Example:
+GET /search?location=KansasCity&start=2026-11-01&end=2026-11-05
+
+Later:
+- Add Redis caching.
+
+PHASE 6 - Authentication and Authorization
+Implement:
+- Registration
+- Login
+- Password hashing
+- JWT tokens
+- Role authorization
+- Protected endpoints
+
+Permissions:
+OWNER -> Can create/manage vehicles
+RENTER -> Can create/manage bookings
+ADMIN -> Can manage platform
+
+PHASE 7 - Payment Service
+Flow:
+Booking
+  -> Payment Service
+  -> Payment Provider
+  -> Payment Result
+  -> Booking Service
+
+Use sandbox/test transactions during development.
+
+PHASE 8 - Event-Driven Architecture
+Initial:
+Booking -> Notification API
+
+Improved:
+Booking Service
+  -> BookingCreated
+  -> SQS/Event Bus
+  -> Notification Service
+
+Later consumers:
+- Notification Service
+- Analytics Service
+- Owner Service
+
+PHASE 9 - Frontend
+Build pages:
+- Home
+- Login
+- Register
+- Search Cars
+- Vehicle Details
+- Checkout
+- Booking Confirmation
+- My Trips
+- Owner Dashboard
+- Add Vehicle
+- Manage Vehicles
+
+PHASE 10 - Docker
+Create:
+- Dockerfile for each service.
+- docker-compose.yml.
+
+Run:
+docker compose up
+
+Local environment should start the entire platform.
+
+PHASE 11 - AWS AND TERRAFORM
+Suggested Terraform structure:
+
+terraform/
+├── modules/
+│   ├── vpc/
+│   ├── eks/
+│   ├── rds/
+│   ├── s3/
+│   ├── ecr/
+│   ├── iam/
+│   └── alb/
+└── environments/
+    ├── dev/
+    └── prod/
+
+Network:
+VPC
+├── Public Subnet AZ1
+├── Public Subnet AZ2
+├── Private App Subnet AZ1
+├── Private App Subnet AZ2
+├── Private DB Subnet AZ1
+└── Private DB Subnet AZ2
+
+Keep application workloads and databases away from unnecessary direct Internet exposure.
+
+PHASE 12 - KUBERNETES AND CI/CD
+Each service can have:
+- Deployment
+- Service
+- ConfigMap
+- Secret
+- Horizontal Pod Autoscaler (HPA)
+
+Example:
+booking-service Deployment
+  -> Pod 1
+  -> Pod 2
+  -> Pod 3
+  -> booking-service ClusterIP
+
+Kubernetes can scale the number of pods as traffic changes.
+
+16. FINAL TARGET ARCHITECTURE
+-----------------------------
+Users
+  -> CloudFront
+  -> Next.js Frontend / ALB
+  -> Amazon EKS
+     -> User Service
+     -> Vehicle Service
+     -> Search Service
+     -> Booking Service
+     -> Payment Service
+     -> Notification Service
+  -> RDS PostgreSQL
+  -> S3
+  -> SQS/EventBridge
+  -> Redis
+
+Infrastructure:
+Terraform
+
+CI/CD:
+GitHub Actions
+  -> Amazon ECR
+  -> Amazon EKS
+
+Monitoring:
+- CloudWatch
+- Prometheus
+- Grafana
+
+17. RECOMMENDED LEARNING APPROACH
+---------------------------------
+Build this as a sequence of hands-on labs instead of trying to create the entire platform at once.
+
+Suggested lab sequence:
+1. Architecture and local development setup.
+2. User Service.
+3. Vehicle Service.
+4. Booking Service.
+5. Search Service.
+6. Authentication.
+7. Payment Service.
+8. Event-driven messaging.
+9. Frontend.
+10. Docker and Docker Compose.
+11. AWS infrastructure with Terraform.
+12. Kubernetes/EKS and CI/CD.
+13. Monitoring and observability.
+14. Security hardening.
+15. Load testing and production-readiness exercises.
+
+Each lab should include:
+- Objective
+- Architecture
+- Prerequisites
+- Step-by-step implementation
+- Code with comments
+- Testing
+- Troubleshooting exercises
+- Git commits
+- AWS cleanup instructions where applicable
