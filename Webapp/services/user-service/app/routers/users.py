@@ -42,6 +42,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db import get_db
+from app.dependencies import get_current_user
 from app.models import User
 from app.schemas import (
     UserResponse,
@@ -98,6 +99,7 @@ router = APIRouter(
 )
 def list_users(
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Return all users ordered by ID.
@@ -135,6 +137,7 @@ def list_users(
 def get_user(
     user_id: int,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Retrieve one user by primary-key ID.
@@ -173,6 +176,7 @@ def update_user(
     user_id: int,
     changes: UserUpdate,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Update an existing user's profile.

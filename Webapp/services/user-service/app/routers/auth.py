@@ -37,6 +37,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db import get_db
+from app.dependencies import get_current_user
 from app.models import User
 from app.schemas import (
     LoginRequest,
@@ -406,3 +407,32 @@ def login(
         access_token=access_token,
         token_type="bearer",
     )
+
+# =========================================================
+# CURRENT AUTHENTICATED USER
+# GET /auth/me
+# =========================================================
+
+@router.get(
+    "/me",
+    response_model=UserResponse,
+    status_code=status.HTTP_200_OK,
+)
+def get_authenticated_user(
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Return the currently authenticated user.
+
+    The client must provide:
+
+        Authorization: Bearer <access_token>
+
+    get_current_user() validates the JWT and loads
+    the corresponding User from PostgreSQL.
+
+    UserResponse ensures sensitive fields such as
+    password_hash are never returned.
+    """
+
+    return current_user

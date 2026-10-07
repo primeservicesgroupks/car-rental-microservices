@@ -167,3 +167,34 @@ def create_access_token(
     )
 
     return token
+
+# =========================================================
+# DECODE ACCESS TOKEN
+# =========================================================
+
+def decode_access_token(
+    token: str,
+) -> dict:
+    """
+    Decode and validate a JWT access token.
+
+    PyJWT verifies:
+
+        - the JWT signature
+        - the expiration time
+        - the configured signing algorithm
+
+    If the token is invalid or expired, PyJWT raises
+    an exception.
+
+    The caller is responsible for translating those
+    exceptions into the appropriate HTTP response.
+    """
+
+    payload = jwt.decode(
+        token,
+        JWT_SECRET_KEY,
+        algorithms=[JWT_ALGORITHM],
+    )
+
+    return payload
