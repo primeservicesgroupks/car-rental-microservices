@@ -3,46 +3,30 @@ users.py
 
 API routes for the User Service.
 
-Endpoints:
-
-    POST /users
-        Create a new user.
-
-    GET /users
-        Retrieve all users.
-
-    GET /users/{user_id}
-        Retrieve one user.
-
-    PUT /users/{user_id}
-        Update an existing user.
-
-Project 2:
-    Data is stored temporarily in app/store.py.
-
 Project 3:
-    The temporary store will be replaced with PostgreSQL.
+    User data is stored persistently in PostgreSQL
+    using SQLAlchemy.
+
+Endpoints:
+    POST /users
+    GET  /users
+    GET  /users/{user_id}
+    PUT  /users/{user_id}
 """
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
-from app import store
+from app.db import get_db
+from app.models import User
 from app.schemas import UserCreate, UserResponse, UserUpdate
 
 
 # =========================================================
 # ROUTER CONFIGURATION
 # =========================================================
-
-# prefix="/users"
-#
-# means every endpoint in this router starts with:
-#
-#     /users
-#
-# tags=["Users"]
-#
-# groups these endpoints together in Swagger.
 
 router = APIRouter(
     prefix="/users",
@@ -60,88 +44,105 @@ router = APIRouter(
     response_model=UserResponse,
     status_code=status.HTTP_201_CREATED,
 )
-def create_user(user: UserCreate):
+def create_user(
+    user: UserCreate,
+    db: Session = Depends(get_db),
+):
     """
-    Create a new user.
-
-    FastAPI validates the incoming request using
-    the UserCreate schema before this function runs.
+    Create a new user in PostgreSQL.
     """
 
-    # -----------------------------------------------------
-    # CHECK FOR DUPLICATE EMAIL
-    # -----------------------------------------------------
-
-    # Search existing users before creating a new one.
-    #
-    # lower() makes the comparison case-insensitive.
+    # Normalize email before storing it.
     #
     # Example:
+    #   John@Example.com
     #
-    # James@example.com
+    # becomes:
+    #   john@example.com
+
+    email = str(user.email).strip().lower()
+
+
+    # -----------------------------------------------------
+    # FRIENDLY DUPLICATE CHECK
+    # -----------------------------------------------------
+
+    # SQL equivalent:
     #
-    # is treated the same as:
+    # SELECT *
+    # FROM users
+    # WHERE email = 'john@example.com';
+
+    existing_user = db.scalar(
+        select(User).where(User.email == email)
+    )
+
+    if existing_user is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Email already exists",
+        )
+
+
+    # -----------------------------------------------------
+    # BUILD ORM OBJECT
+    # -----------------------------------------------------
+
+    # model_dump() converts the Pydantic object to a dict.
     #
-    # james@example.com
-
-    for existing_user in store.users_db.values():
-
-        existing_email = str(
-            existing_user["email"]
-        ).lower()
-
-        requested_email = str(
-            user.email
-        ).lower()
-
-        if existing_email == requested_email:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="A user with this email already exists",
-            )
-
-    # -----------------------------------------------------
-    # GENERATE USER ID
-    # -----------------------------------------------------
-
-    user_id = store.next_user_id
-
-
-    # -----------------------------------------------------
-    # BUILD USER RECORD
-    # -----------------------------------------------------
-
-    # model_dump() converts the Pydantic UserCreate
-    # object into a regular Python dictionary.
+    # We exclude email because we want to use our
+    # normalized lowercase version.
     #
-    # The ** operator unpacks those fields into
-    # our new dictionary.
+    # We exclude role because Pydantic uses UserRole,
+    # while PostgreSQL stores the role as text.
 
-    new_user = {
-        "id": user_id,
-        **user.model_dump(),
-    }
+    record = User(
+        **user.model_dump(
+            exclude={"email", "role"}
+        ),
+        email=email,
+        role=user.role.value,
+    )
+
+
+    # Add the new object to the SQLAlchemy Session.
+
+    db.add(record)
 
 
     # -----------------------------------------------------
-    # SAVE USER
+    # SAVE TO POSTGRESQL
     # -----------------------------------------------------
 
-    # Store the user using the ID as the dictionary key.
+    try:
+        db.commit()
 
-    store.users_db[user_id] = new_user
+    except IntegrityError:
+
+        # A failed transaction must be rolled back
+        # before this Session can continue being used.
+
+        db.rollback()
+
+        # PostgreSQL's UNIQUE email protection handles
+        # cases such as two concurrent requests attempting
+        # to create the same email.
+
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Email already exists",
+        )
 
 
-    # Prepare the next ID.
+    # Reload database-generated values such as ID.
 
-    store.next_user_id += 1
+    db.refresh(record)
 
-
-    return new_user
+    return record
 
 
 # =========================================================
-# LIST ALL USERS
+# LIST USERS
 # GET /users
 # =========================================================
 
@@ -150,31 +151,20 @@ def create_user(user: UserCreate):
     response_model=list[UserResponse],
     status_code=status.HTTP_200_OK,
 )
-def list_users():
+def list_users(
+    db: Session = Depends(get_db),
+):
     """
-    Return every user currently stored.
-
-    GET endpoints retrieve information without
-    changing application state.
+    Return all users ordered by ID.
     """
 
-    # users_db looks like:
-    #
-    # {
-    #     1: {...},
-    #     2: {...}
-    # }
-    #
-    # .values() retrieves the user dictionaries.
-    #
-    # list(...) converts those values into a list
-    # that FastAPI can return as JSON.
+    statement = select(User).order_by(User.id)
 
-    return list(store.users_db.values())
+    return db.scalars(statement).all()
 
 
 # =========================================================
-# RETRIEVE ONE USER
+# GET ONE USER
 # GET /users/{user_id}
 # =========================================================
 
@@ -183,34 +173,26 @@ def list_users():
     response_model=UserResponse,
     status_code=status.HTTP_200_OK,
 )
-def get_user(user_id: int):
+def get_user(
+    user_id: int,
+    db: Session = Depends(get_db),
+):
     """
-    Return one user by numeric ID.
+    Retrieve one user using the primary key.
     """
 
-    # .get() safely searches the dictionary.
-    #
-    # If the ID exists:
-    #     user contains the user's data.
-    #
-    # If the ID does not exist:
-    #     user becomes None.
+    record = db.get(
+        User,
+        user_id,
+    )
 
-    user = store.users_db.get(user_id)
-
-
-    # -----------------------------------------------------
-    # USER NOT FOUND
-    # -----------------------------------------------------
-
-    if user is None:
+    if record is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found",
         )
 
-
-    return user
+    return record
 
 
 # =========================================================
@@ -226,21 +208,25 @@ def get_user(user_id: int):
 def update_user(
     user_id: int,
     changes: UserUpdate,
+    db: Session = Depends(get_db),
 ):
     """
     Update an existing user.
 
-    Only fields supplied by the client will be changed.
+    Only fields explicitly supplied by the client
+    will be modified.
     """
 
     # -----------------------------------------------------
-    # FIND USER
+    # FIND EXISTING USER
     # -----------------------------------------------------
 
-    user = store.users_db.get(user_id)
+    record = db.get(
+        User,
+        user_id,
+    )
 
-
-    if user is None:
+    if record is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found",
@@ -251,73 +237,112 @@ def update_user(
     # GET REQUESTED CHANGES
     # -----------------------------------------------------
 
-    # exclude_unset=True means:
-    #
-    # Only fields actually supplied by the client
-    # are included.
-    #
-    # Example request:
-    #
-    # {
-    #     "phone": "9135559999"
-    # }
-    #
-    # becomes:
-    #
-    # {
-    #     "phone": "9135559999"
-    # }
-    #
-    # Other fields remain untouched.
+    # exclude_unset=True means only fields explicitly
+    # included in the request are returned.
 
-    update_data = changes.model_dump(
+    data = changes.model_dump(
         exclude_unset=True,
     )
 
 
     # -----------------------------------------------------
-    # CHECK EMAIL UNIQUENESS
+    # PROTECT REQUIRED FIELDS
     # -----------------------------------------------------
 
-    # We only need to perform this check if the client
-    # is attempting to change the email address.
+    # These database columns are NOT NULL.
+    #
+    # Therefore a client should not be able to explicitly
+    # update them to None.
 
-    if "email" in update_data:
-
-        new_email = str(
-            update_data["email"]
-        ).lower()
-
-
-        for existing_id, existing_user in store.users_db.items():
-
-            # Do not compare the user against themselves.
-            if existing_id == user_id:
-                continue
+    if (
+        "first_name" in data
+        and data["first_name"] is None
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="first_name cannot be null",
+        )
 
 
-            existing_email = str(
-                existing_user["email"]
-            ).lower()
-
-
-            if existing_email == new_email:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="A user with this email already exists",
-                )
+    if (
+        "last_name" in data
+        and data["last_name"] is None
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="last_name cannot be null",
+        )
 
 
     # -----------------------------------------------------
-    # APPLY CHANGES
+    # NORMALIZE EMAIL
     # -----------------------------------------------------
 
-    user.update(update_data)
+    if "email" in data:
+
+        if data["email"] is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="email cannot be null",
+            )
+
+        data["email"] = (
+            str(data["email"])
+            .strip()
+            .lower()
+        )
 
 
-    # Save the updated user back into our temporary store.
+    # -----------------------------------------------------
+    # CONVERT ROLE ENUM TO DATABASE STRING
+    # -----------------------------------------------------
 
-    store.users_db[user_id] = user
+    if "role" in data:
+
+        if data["role"] is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="role cannot be null",
+            )
+
+        data["role"] = data["role"].value
 
 
-    return user
+    # -----------------------------------------------------
+    # APPLY CHANGES TO ORM OBJECT
+    # -----------------------------------------------------
+
+    for key, value in data.items():
+        setattr(
+            record,
+            key,
+            value,
+        )
+
+
+    # -----------------------------------------------------
+    # SAVE CHANGES
+    # -----------------------------------------------------
+
+    try:
+        db.commit()
+
+    except IntegrityError:
+
+        db.rollback()
+
+        # Most likely the update attempted to use an
+        # email address that already belongs to another
+        # user.
+
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Email already exists",
+        )
+
+
+    # Reload the updated database row.
+
+    db.refresh(record)
+
+    return record

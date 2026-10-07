@@ -2,30 +2,19 @@
 main.py
 
 Entry point for the Car Rental User Service.
-
-This file:
-- Creates the FastAPI application
-- Registers the User router
-- Provides a health-check endpoint
-
-Run the service from the user-service directory with:
-
-    uvicorn app.main:app --reload --port 8001
 """
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
+from sqlalchemy import text
+from sqlalchemy.orm import Session
 
+from app.db import get_db
 from app.routers.users import router as users_router
 
 
 # =========================================================
 # CREATE FASTAPI APPLICATION
 # =========================================================
-
-# FastAPI() creates the web application.
-#
-# The information below is automatically displayed
-# in the Swagger/OpenAPI documentation.
 
 app = FastAPI(
     title="Car Rental User Service",
@@ -38,24 +27,11 @@ app = FastAPI(
 # REGISTER ROUTERS
 # =========================================================
 
-# Import and register the User router.
-#
-# users_router already has:
-#
-#     prefix="/users"
-#
-# Therefore its endpoints become:
-#
-#     POST /users
-#     GET  /users
-#     GET  /users/{user_id}
-#     PUT  /users/{user_id}
-
 app.include_router(users_router)
 
 
 # =========================================================
-# HEALTH CHECK
+# API HEALTH CHECK
 # =========================================================
 
 @app.get(
@@ -64,12 +40,36 @@ app.include_router(users_router)
 )
 def health_check():
     """
-    Verify that the User Service is running.
+    Verify that the FastAPI process is responding.
 
-    A successful request returns HTTP 200 automatically.
+    This does NOT prove PostgreSQL is available.
     """
 
     return {
         "status": "healthy",
         "service": "user-service",
+    }
+
+
+# =========================================================
+# DATABASE HEALTH CHECK
+# =========================================================
+
+@app.get(
+    "/health/db",
+    tags=["Health"],
+)
+def database_health_check(
+    db: Session = Depends(get_db),
+):
+    """
+    Verify that the application can communicate
+    with PostgreSQL.
+    """
+
+    db.execute(text("SELECT 1"))
+
+    return {
+        "status": "healthy",
+        "database": "reachable",
     }
