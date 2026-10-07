@@ -83,6 +83,11 @@ class User(Base):
         index=True,
     )
 
+    password_hash: Mapped[str] = mapped_column(
+    String(255),
+    nullable=False,
+)
+
     # -----------------------------------------------------
     # PHONE
     # -----------------------------------------------------

@@ -1,27 +1,52 @@
 """
 users.py
 
-API routes for the User Service.
+User-management routes for the Car Rental User Service.
 
 Project 3:
-    User data is stored persistently in PostgreSQL
-    using SQLAlchemy.
+    User data was moved from temporary in-memory storage
+    to PostgreSQL using SQLAlchemy.
 
-Endpoints:
-    POST /users
-    GET  /users
-    GET  /users/{user_id}
-    PUT  /users/{user_id}
+Project 4:
+    Account creation has moved to:
+
+        POST /auth/register
+
+    because registration must securely hash the user's
+    password before storing the account.
+
+Current endpoints:
+
+    GET /users
+        Retrieve all users.
+
+    GET /users/{user_id}
+        Retrieve one user.
+
+    PUT /users/{user_id}
+        Update allowed profile information.
+
+Future Project 4 work will protect these routes using
+JWT authentication and role-based authorization.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    status,
+)
+
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models import User
-from app.schemas import UserCreate, UserResponse, UserUpdate
+from app.schemas import (
+    UserResponse,
+    UserUpdate,
+)
 
 
 # =========================================================
@@ -35,110 +60,30 @@ router = APIRouter(
 
 
 # =========================================================
-# CREATE USER
-# POST /users
+# IMPORTANT PROJECT 4 DESIGN CHANGE
 # =========================================================
 
-@router.post(
-    "",
-    response_model=UserResponse,
-    status_code=status.HTTP_201_CREATED,
-)
-def create_user(
-    user: UserCreate,
-    db: Session = Depends(get_db),
-):
-    """
-    Create a new user in PostgreSQL.
-    """
-
-    # Normalize email before storing it.
-    #
-    # Example:
-    #   John@Example.com
-    #
-    # becomes:
-    #   john@example.com
-
-    email = str(user.email).strip().lower()
-
-
-    # -----------------------------------------------------
-    # FRIENDLY DUPLICATE CHECK
-    # -----------------------------------------------------
-
-    # SQL equivalent:
-    #
-    # SELECT *
-    # FROM users
-    # WHERE email = 'john@example.com';
-
-    existing_user = db.scalar(
-        select(User).where(User.email == email)
-    )
-
-    if existing_user is not None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Email already exists",
-        )
-
-
-    # -----------------------------------------------------
-    # BUILD ORM OBJECT
-    # -----------------------------------------------------
-
-    # model_dump() converts the Pydantic object to a dict.
-    #
-    # We exclude email because we want to use our
-    # normalized lowercase version.
-    #
-    # We exclude role because Pydantic uses UserRole,
-    # while PostgreSQL stores the role as text.
-
-    record = User(
-        **user.model_dump(
-            exclude={"email", "role"}
-        ),
-        email=email,
-        role=user.role.value,
-    )
-
-
-    # Add the new object to the SQLAlchemy Session.
-
-    db.add(record)
-
-
-    # -----------------------------------------------------
-    # SAVE TO POSTGRESQL
-    # -----------------------------------------------------
-
-    try:
-        db.commit()
-
-    except IntegrityError:
-
-        # A failed transaction must be rolled back
-        # before this Session can continue being used.
-
-        db.rollback()
-
-        # PostgreSQL's UNIQUE email protection handles
-        # cases such as two concurrent requests attempting
-        # to create the same email.
-
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Email already exists",
-        )
-
-
-    # Reload database-generated values such as ID.
-
-    db.refresh(record)
-
-    return record
+# Project 3 previously contained:
+#
+#     POST /users
+#
+# That endpoint is intentionally removed in Project 4.
+#
+# New account creation must go through:
+#
+#     POST /auth/register
+#
+# because registration is responsible for:
+#
+#     1. validating registration data
+#     2. validating the requested role
+#     3. normalizing the email address
+#     4. checking for duplicate email addresses
+#     5. hashing the plaintext password
+#     6. storing password_hash in PostgreSQL
+#     7. returning a safe UserResponse
+#
+# We do NOT create users here without a password hash.
 
 
 # =========================================================
@@ -156,11 +101,25 @@ def list_users(
 ):
     """
     Return all users ordered by ID.
+
+    Project 4 note:
+        This endpoint is currently public for learning
+        purposes.
+
+        Later in Project 4 it will be protected using
+        JWT authentication and authorization.
     """
 
-    statement = select(User).order_by(User.id)
+    statement = (
+        select(User)
+        .order_by(User.id)
+    )
 
-    return db.scalars(statement).all()
+    records = db.scalars(
+        statement
+    ).all()
+
+    return records
 
 
 # =========================================================
@@ -178,7 +137,12 @@ def get_user(
     db: Session = Depends(get_db),
 ):
     """
-    Retrieve one user using the primary key.
+    Retrieve one user by primary-key ID.
+
+    Returns:
+        200 - User found.
+
+        404 - User does not exist.
     """
 
     record = db.get(
@@ -211,15 +175,21 @@ def update_user(
     db: Session = Depends(get_db),
 ):
     """
-    Update an existing user.
+    Update an existing user's profile.
 
-    Only fields explicitly supplied by the client
-    will be modified.
+    Only fields explicitly supplied in the request
+    are considered for modification.
+
+    Password changes are NOT handled here.
+
+    Role changes are also blocked here during Project 4.
+    They will eventually require appropriate authorization.
     """
 
-    # -----------------------------------------------------
-    # FIND EXISTING USER
-    # -----------------------------------------------------
+
+    # =====================================================
+    # FIND USER
+    # =====================================================
 
     record = db.get(
         User,
@@ -233,26 +203,44 @@ def update_user(
         )
 
 
-    # -----------------------------------------------------
-    # GET REQUESTED CHANGES
-    # -----------------------------------------------------
+    # =====================================================
+    # GET ONLY FIELDS PROVIDED BY CLIENT
+    # =====================================================
 
-    # exclude_unset=True means only fields explicitly
-    # included in the request are returned.
+    # Example:
+    #
+    # Request:
+    #
+    # {
+    #     "phone": "9135559999"
+    # }
+    #
+    # produces:
+    #
+    # {
+    #     "phone": "9135559999"
+    # }
+    #
+    # Other fields remain unchanged.
 
     data = changes.model_dump(
         exclude_unset=True,
     )
 
 
-    # -----------------------------------------------------
-    # PROTECT REQUIRED FIELDS
-    # -----------------------------------------------------
+    # =====================================================
+    # PROTECT FIRST NAME
+    # =====================================================
 
-    # These database columns are NOT NULL.
+    # first_name is NOT NULL in PostgreSQL.
     #
-    # Therefore a client should not be able to explicitly
-    # update them to None.
+    # Therefore:
+    #
+    # {
+    #     "first_name": null
+    # }
+    #
+    # must not be allowed.
 
     if (
         "first_name" in data
@@ -264,6 +252,10 @@ def update_user(
         )
 
 
+    # =====================================================
+    # PROTECT LAST NAME
+    # =====================================================
+
     if (
         "last_name" in data
         and data["last_name"] is None
@@ -274,9 +266,9 @@ def update_user(
         )
 
 
-    # -----------------------------------------------------
+    # =====================================================
     # NORMALIZE EMAIL
-    # -----------------------------------------------------
+    # =====================================================
 
     if "email" in data:
 
@@ -293,24 +285,38 @@ def update_user(
         )
 
 
-    # -----------------------------------------------------
-    # CONVERT ROLE ENUM TO DATABASE STRING
-    # -----------------------------------------------------
+    # =====================================================
+    # BLOCK ROLE CHANGES THROUGH PROFILE UPDATE
+    # =====================================================
+
+    # Project 3 allowed role changes because authentication
+    # and authorization had not yet been implemented.
+    #
+    # In Project 4, allowing someone to submit:
+    #
+    # {
+    #     "role": "ADMIN"
+    # }
+    #
+    # through an ordinary profile update would be a
+    # privilege-escalation vulnerability.
+    #
+    # Role management will eventually be handled through
+    # an authorized administrative workflow.
 
     if "role" in data:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Role cannot be changed through "
+                "the user profile endpoint"
+            ),
+        )
 
-        if data["role"] is None:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="role cannot be null",
-            )
 
-        data["role"] = data["role"].value
-
-
-    # -----------------------------------------------------
-    # APPLY CHANGES TO ORM OBJECT
-    # -----------------------------------------------------
+    # =====================================================
+    # APPLY CHANGES
+    # =====================================================
 
     for key, value in data.items():
         setattr(
@@ -320,20 +326,22 @@ def update_user(
         )
 
 
-    # -----------------------------------------------------
-    # SAVE CHANGES
-    # -----------------------------------------------------
+    # =====================================================
+    # SAVE CHANGES TO POSTGRESQL
+    # =====================================================
 
     try:
         db.commit()
 
     except IntegrityError:
 
-        db.rollback()
+        # PostgreSQL rejected the update.
+        #
+        # The most likely reason in this endpoint is
+        # attempting to change the email address to one
+        # that already belongs to another user.
 
-        # Most likely the update attempted to use an
-        # email address that already belongs to another
-        # user.
+        db.rollback()
 
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -341,8 +349,26 @@ def update_user(
         )
 
 
-    # Reload the updated database row.
+    # =====================================================
+    # REFRESH ORM OBJECT
+    # =====================================================
+
+    # Reload the database row so our ORM object reflects
+    # the final committed database state.
 
     db.refresh(record)
+
+
+    # =====================================================
+    # RETURN SAFE RESPONSE
+    # =====================================================
+
+    # response_model=UserResponse controls what FastAPI
+    # exposes to the client.
+    #
+    # UserResponse must NOT contain:
+    #
+    #     password
+    #     password_hash
 
     return record
