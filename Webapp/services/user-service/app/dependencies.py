@@ -28,6 +28,8 @@ from app.db import get_db
 from app.models import User
 from app.security import decode_access_token
 
+from collections.abc import Callable
+
 
 # =========================================================
 # OAUTH2 BEARER TOKEN EXTRACTOR
@@ -141,3 +143,52 @@ def get_current_user(
     # -----------------------------------------------------
 
     return record
+
+# =========================================================
+# REQUIRE ROLE
+# =========================================================
+
+def require_role(
+    *allowed_roles: str,
+) -> Callable:
+    """
+    Create a reusable FastAPI authorization dependency.
+
+    The returned dependency:
+
+        1. authenticates the caller
+        2. obtains the current User
+        3. checks the user's role
+        4. returns the User when authorized
+        5. raises HTTP 403 when unauthorized
+
+    Example:
+
+        current_user: User = Depends(
+            require_role("ADMIN")
+        )
+
+    Future example:
+
+        current_user: User = Depends(
+            require_role("OWNER", "ADMIN")
+        )
+    """
+
+    def role_checker(
+        current_user: User = Depends(get_current_user),
+    ) -> User:
+        """
+        Check whether the authenticated user's role
+        is one of the allowed roles.
+        """
+
+        if current_user.role not in allowed_roles:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Insufficient permissions",
+            )
+
+        return current_user
+
+    return role_checker

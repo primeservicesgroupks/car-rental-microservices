@@ -4,30 +4,36 @@ users.py
 User-management routes for the Car Rental User Service.
 
 Project 3:
-    User data was moved from temporary in-memory storage
-    to PostgreSQL using SQLAlchemy.
+    - User data moved from in-memory storage to PostgreSQL.
+    - SQLAlchemy became the persistence layer.
 
 Project 4:
-    Account creation has moved to:
+    - Account creation moved to POST /auth/register.
+    - JWT authentication protects user-management endpoints.
+    - Role-based access control protects administrative operations.
+    - Ownership authorization prevents users from accessing or
+      modifying another user's profile.
 
-        POST /auth/register
-
-    because registration must securely hash the user's
-    password before storing the account.
-
-Current endpoints:
+Authorization policy:
 
     GET /users
-        Retrieve all users.
+        ADMIN only.
 
     GET /users/{user_id}
-        Retrieve one user.
+        The user may retrieve their own profile.
+        ADMIN may retrieve any user's profile.
 
     PUT /users/{user_id}
-        Update allowed profile information.
+        The user may update their own profile.
+        ADMIN may update any user's allowed profile fields.
 
-Future Project 4 work will protect these routes using
-JWT authentication and role-based authorization.
+Important:
+    Password changes are NOT handled by this router.
+
+    Role changes are NOT handled by this router.
+
+    UserUpdate intentionally excludes password, password_hash,
+    and role.
 """
 
 from fastapi import (
@@ -42,7 +48,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.dependencies import get_current_user
+from app.dependencies import (
+    get_current_user,
+    require_role,
+)
 from app.models import User
 from app.schemas import (
     UserResponse,
@@ -64,32 +73,35 @@ router = APIRouter(
 # IMPORTANT PROJECT 4 DESIGN CHANGE
 # =========================================================
 
-# Project 3 previously contained:
+# Project 3 previously allowed:
 #
 #     POST /users
 #
-# That endpoint is intentionally removed in Project 4.
+# That endpoint has intentionally been removed.
 #
-# New account creation must go through:
+# Account creation now happens through:
 #
 #     POST /auth/register
 #
-# because registration is responsible for:
+# The registration workflow is responsible for:
 #
-#     1. validating registration data
-#     2. validating the requested role
-#     3. normalizing the email address
-#     4. checking for duplicate email addresses
-#     5. hashing the plaintext password
-#     6. storing password_hash in PostgreSQL
-#     7. returning a safe UserResponse
+#     - validating registration data
+#     - validating the requested role
+#     - blocking public ADMIN registration
+#     - normalizing the email address
+#     - checking duplicate email addresses
+#     - hashing the plaintext password
+#     - storing password_hash
+#     - returning a safe UserResponse
 #
-# We do NOT create users here without a password hash.
+# This gives the application one controlled account-
+# creation workflow.
 
 
 # =========================================================
-# LIST USERS
+# LIST ALL USERS
 # GET /users
+# ADMIN ONLY
 # =========================================================
 
 @router.get(
@@ -99,18 +111,32 @@ router = APIRouter(
 )
 def list_users(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(
+        require_role("ADMIN")
+    ),
 ):
     """
     Return all users ordered by ID.
 
-    Project 4 note:
-        This endpoint is currently public for learning
-        purposes.
+    Authorization:
+        ADMIN only.
 
-        Later in Project 4 it will be protected using
-        JWT authentication and authorization.
+    RENTER:
+        403 Forbidden
+
+    OWNER:
+        403 Forbidden
+
+    ADMIN:
+        200 OK
+
+    Authentication and ADMIN-role validation are performed
+    by require_role("ADMIN").
     """
+
+    # -----------------------------------------------------
+    # QUERY USERS
+    # -----------------------------------------------------
 
     statement = (
         select(User)
@@ -121,12 +147,17 @@ def list_users(
         statement
     ).all()
 
+    # UserResponse controls serialization and prevents
+    # sensitive fields such as password_hash from being
+    # exposed.
+
     return records
 
 
 # =========================================================
 # GET ONE USER
 # GET /users/{user_id}
+# OWN PROFILE OR ADMIN
 # =========================================================
 
 @router.get(
@@ -142,16 +173,59 @@ def get_user(
     """
     Retrieve one user by primary-key ID.
 
-    Returns:
-        200 - User found.
+    Authorization:
 
-        404 - User does not exist.
+        Normal users:
+            May retrieve only their own profile.
+
+        ADMIN:
+            May retrieve any user's profile.
+
+    Authentication:
+        A valid Bearer JWT is required.
     """
+
+
+    # =====================================================
+    # AUTHORIZATION
+    # =====================================================
+
+    # Allow the request when:
+    #
+    #     current_user.id == user_id
+    #
+    # OR:
+    #
+    #     current_user.role == "ADMIN"
+    #
+    # Deny when BOTH are false.
+
+    if (
+        current_user.id != user_id
+        and current_user.role != "ADMIN"
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "You do not have permission "
+                "to access this user"
+            ),
+        )
+
+
+    # =====================================================
+    # FIND TARGET USER
+    # =====================================================
 
     record = db.get(
         User,
         user_id,
     )
+
+
+    # =====================================================
+    # USER DOES NOT EXIST
+    # =====================================================
 
     if record is None:
         raise HTTPException(
@@ -159,12 +233,18 @@ def get_user(
             detail="User not found",
         )
 
+
+    # =====================================================
+    # RETURN SAFE USER RESPONSE
+    # =====================================================
+
     return record
 
 
 # =========================================================
 # UPDATE USER
 # PUT /users/{user_id}
+# OWN PROFILE OR ADMIN
 # =========================================================
 
 @router.put(
@@ -179,20 +259,53 @@ def update_user(
     current_user: User = Depends(get_current_user),
 ):
     """
-    Update an existing user's profile.
+    Update an existing user's allowed profile fields.
 
-    Only fields explicitly supplied in the request
-    are considered for modification.
+    Authorization:
 
-    Password changes are NOT handled here.
+        Normal users:
+            May update only their own profile.
 
-    Role changes are also blocked here during Project 4.
-    They will eventually require appropriate authorization.
+        ADMIN:
+            May update any user's allowed profile fields.
+
+    The following fields are intentionally NOT handled
+    through this endpoint:
+
+        password
+        password_hash
+        role
+
+    Password and role management require separate,
+    controlled workflows.
     """
 
 
     # =====================================================
-    # FIND USER
+    # AUTHORIZATION
+    # =====================================================
+
+    # A normal authenticated user may update only the
+    # database record matching their authenticated ID.
+    #
+    # ADMIN users may update another user's normal
+    # profile information.
+
+    if (
+        current_user.id != user_id
+        and current_user.role != "ADMIN"
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "You do not have permission "
+                "to modify this user"
+            ),
+        )
+
+
+    # =====================================================
+    # FIND TARGET USER
     # =====================================================
 
     record = db.get(
@@ -208,24 +321,24 @@ def update_user(
 
 
     # =====================================================
-    # GET ONLY FIELDS PROVIDED BY CLIENT
+    # GET REQUESTED CHANGES
     # =====================================================
 
-    # Example:
+    # exclude_unset=True is important.
     #
-    # Request:
-    #
-    # {
-    #     "phone": "9135559999"
-    # }
-    #
-    # produces:
+    # Suppose the request contains:
     #
     # {
     #     "phone": "9135559999"
     # }
     #
-    # Other fields remain unchanged.
+    # Then data becomes:
+    #
+    # {
+    #     "phone": "9135559999"
+    # }
+    #
+    # Fields not included by the client remain unchanged.
 
     data = changes.model_dump(
         exclude_unset=True,
@@ -238,13 +351,13 @@ def update_user(
 
     # first_name is NOT NULL in PostgreSQL.
     #
-    # Therefore:
+    # Therefore an explicit:
     #
     # {
     #     "first_name": null
     # }
     #
-    # must not be allowed.
+    # must be rejected.
 
     if (
         "first_name" in data
@@ -276,11 +389,23 @@ def update_user(
 
     if "email" in data:
 
+        # Email is NOT NULL in PostgreSQL.
+
         if data["email"] is None:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="email cannot be null",
             )
+
+        # Normalize email addresses before storing them.
+        #
+        # Example:
+        #
+        #     Ade@Example.com
+        #
+        # becomes:
+        #
+        #     ade@example.com
 
         data["email"] = (
             str(data["email"])
@@ -290,37 +415,20 @@ def update_user(
 
 
     # =====================================================
-    # BLOCK ROLE CHANGES THROUGH PROFILE UPDATE
+    # APPLY ALLOWED CHANGES
     # =====================================================
 
-    # Project 3 allowed role changes because authentication
-    # and authorization had not yet been implemented.
+    # UserUpdate determines which fields may reach this
+    # point.
     #
-    # In Project 4, allowing someone to submit:
+    # Because UserUpdate does NOT contain:
     #
-    # {
-    #     "role": "ADMIN"
-    # }
+    #     role
+    #     password
+    #     password_hash
     #
-    # through an ordinary profile update would be a
-    # privilege-escalation vulnerability.
-    #
-    # Role management will eventually be handled through
-    # an authorized administrative workflow.
-
-    if "role" in data:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=(
-                "Role cannot be changed through "
-                "the user profile endpoint"
-            ),
-        )
-
-
-    # =====================================================
-    # APPLY CHANGES
-    # =====================================================
+    # those security-sensitive fields cannot be changed
+    # through this profile endpoint.
 
     for key, value in data.items():
         setattr(
@@ -331,7 +439,7 @@ def update_user(
 
 
     # =====================================================
-    # SAVE CHANGES TO POSTGRESQL
+    # SAVE CHANGES
     # =====================================================
 
     try:
@@ -339,11 +447,11 @@ def update_user(
 
     except IntegrityError:
 
-        # PostgreSQL rejected the update.
+        # PostgreSQL rejected the transaction.
         #
-        # The most likely reason in this endpoint is
-        # attempting to change the email address to one
-        # that already belongs to another user.
+        # The most likely reason here is an attempt to
+        # change the user's email to an address already
+        # assigned to another user.
 
         db.rollback()
 
@@ -357,8 +465,7 @@ def update_user(
     # REFRESH ORM OBJECT
     # =====================================================
 
-    # Reload the database row so our ORM object reflects
-    # the final committed database state.
+    # Reload database-generated/final values after commit.
 
     db.refresh(record)
 
@@ -367,12 +474,7 @@ def update_user(
     # RETURN SAFE RESPONSE
     # =====================================================
 
-    # response_model=UserResponse controls what FastAPI
-    # exposes to the client.
-    #
-    # UserResponse must NOT contain:
-    #
-    #     password
-    #     password_hash
+    # response_model=UserResponse ensures fields such as
+    # password_hash are never serialized into the response.
 
     return record
