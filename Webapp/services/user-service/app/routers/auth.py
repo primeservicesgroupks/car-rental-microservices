@@ -1,29 +1,42 @@
+
 """
 auth.py
 
-Authentication routes for the Car Rental User Service.
+PROJECT 4 — USER SERVICE AUTHENTICATION
 
-Project 4 introduces authentication and authorization.
+Purpose:
+    Handle user registration, login, and authenticated
+    identity retrieval.
 
-Current endpoint:
+Endpoints:
     POST /auth/register
-        Register a new RENTER or OWNER account.
+        Register a RENTER or OWNER account.
 
-Coming next:
     POST /auth/login
-        Authenticate a user and issue a JWT access token.
+        Verify credentials and issue a signed JWT.
 
     GET /auth/me
-        Return information about the currently
-        authenticated user.
+        Return the authenticated user's information.
 
-Security rules:
-    - Passwords are never stored as plaintext.
-    - Passwords are hashed before database storage.
+Project 5 integration:
+    JWT tokens must contain:
+        sub  = authenticated user's database ID
+        role = authenticated user's database role
+        exp  = token expiration timestamp
+
+Security:
+    - Public ADMIN registration is prohibited.
+    - Passwords are hashed using Argon2.
     - Password hashes are never returned by the API.
-    - ADMIN accounts cannot be created through
-      public registration.
+    - Login returns the same error for unknown emails
+      and incorrect passwords.
+    - The JWT role comes from PostgreSQL, never from
+      client-supplied login data.
 """
+
+# =========================================================
+# 1. IMPORTS
+# =========================================================
 
 from fastapi import (
     APIRouter,
@@ -39,6 +52,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.dependencies import get_current_user
 from app.models import User
+
 from app.schemas import (
     LoginRequest,
     TokenResponse,
@@ -46,6 +60,7 @@ from app.schemas import (
     UserResponse,
     UserRole,
 )
+
 from app.security import (
     create_access_token,
     hash_password,
@@ -54,7 +69,7 @@ from app.security import (
 
 
 # =========================================================
-# ROUTER CONFIGURATION
+# 2. ROUTER CONFIGURATION
 # =========================================================
 
 router = APIRouter(
@@ -64,7 +79,7 @@ router = APIRouter(
 
 
 # =========================================================
-# REGISTER USER
+# 3. REGISTER USER
 # POST /auth/register
 # =========================================================
 
@@ -78,46 +93,22 @@ def register_user(
     db: Session = Depends(get_db),
 ):
     """
-    Register a new user.
+    Register a new RENTER or OWNER.
 
-    Registration flow:
+    Workflow:
+        1. Validate requested role.
+        2. Normalize email.
+        3. Check duplicate email.
+        4. Hash password.
+        5. Insert user into PostgreSQL.
+        6. Return safe user information.
 
-        HTTP request
-            ↓
-        Pydantic validation
-            ↓
-        Validate requested role
-            ↓
-        Normalize email
-            ↓
-        Check duplicate email
-            ↓
-        Hash plaintext password
-            ↓
-        Create SQLAlchemy User
-            ↓
-        Save to PostgreSQL
-            ↓
-        Return safe UserResponse
-
-    The plaintext password is never stored.
-
-    The password hash is stored in PostgreSQL but
-    is never included in UserResponse.
+    Public users cannot register as ADMIN.
     """
 
-
-    # =====================================================
-    # SECURITY CHECK: BLOCK PUBLIC ADMIN REGISTRATION
-    # =====================================================
-
-    # A public user must never be able to create their
-    # own ADMIN account simply by submitting:
-    #
-    #     "role": "ADMIN"
-    #
-    # Administrative accounts should eventually be
-    # provisioned through a trusted administrative process.
+    # -----------------------------------------------------
+    # STEP 1 — BLOCK PUBLIC ADMIN REGISTRATION
+    # -----------------------------------------------------
 
     if registration.role == UserRole.ADMIN:
         raise HTTPException(
@@ -128,48 +119,22 @@ def register_user(
             ),
         )
 
+    # -----------------------------------------------------
+    # STEP 2 — NORMALIZE EMAIL
+    # -----------------------------------------------------
 
-    # =====================================================
-    # NORMALIZE EMAIL ADDRESS
-    # =====================================================
-
-    # Convert the validated EmailStr into a regular string.
-    #
-    # strip()
-    #     Removes accidental leading/trailing whitespace.
-    #
-    # lower()
-    #     Makes our email comparison case-insensitive.
-    #
     # Example:
-    #
-    #     Ade.Project4@Example.com
-    #
-    # becomes:
-    #
-    #     ade.project4@example.com
+    #   Owner@Example.com -> owner@example.com
 
-    email = str(
-        registration.email
-    ).strip().lower()
+    email = str(registration.email).strip().lower()
 
-
-    # =====================================================
-    # CHECK FOR DUPLICATE EMAIL
-    # =====================================================
-
-    # Query PostgreSQL for an existing account using
-    # the normalized email address.
+    # -----------------------------------------------------
+    # STEP 3 — CHECK DUPLICATE EMAIL
+    # -----------------------------------------------------
 
     existing_user = db.scalar(
-        select(User).where(
-            User.email == email
-        )
+        select(User).where(User.email == email)
     )
-
-
-    # If the email already exists, registration should
-    # stop before hashing or attempting an INSERT.
 
     if existing_user is not None:
         raise HTTPException(
@@ -177,36 +142,20 @@ def register_user(
             detail="Email already exists",
         )
 
+    # -----------------------------------------------------
+    # STEP 4 — HASH PASSWORD
+    # -----------------------------------------------------
 
-    # =====================================================
-    # HASH THE PASSWORD
-    # =====================================================
-
-    # registration.password contains the plaintext password.
-    #
-    # We NEVER put that value directly into PostgreSQL.
-    #
-    # security.py converts it into an Argon2 password hash.
+    # Never store registration.password directly.
+    # Argon2 generates a salted password hash.
 
     hashed_password = hash_password(
         registration.password
     )
 
-
-    # =====================================================
-    # CREATE SQLALCHEMY USER OBJECT
-    # =====================================================
-
-    # Build the ORM object that will eventually become
-    # a row in the PostgreSQL users table.
-    #
-    # Notice:
-    #
-    #     password_hash=hashed_password
-    #
-    # NOT:
-    #
-    #     password=registration.password
+    # -----------------------------------------------------
+    # STEP 5 — CREATE DATABASE RECORD
+    # -----------------------------------------------------
 
     record = User(
         first_name=registration.first_name,
@@ -217,96 +166,46 @@ def register_user(
         password_hash=hashed_password,
     )
 
-
-    # =====================================================
-    # ADD USER TO SQLALCHEMY SESSION
-    # =====================================================
-
-    # add() stages the new object for insertion.
-    #
-    # It does NOT permanently save the record until
-    # db.commit() succeeds.
-
     db.add(record)
 
-
-    # =====================================================
-    # COMMIT USER TO POSTGRESQL
-    # =====================================================
+    # -----------------------------------------------------
+    # STEP 6 — COMMIT TRANSACTION
+    # -----------------------------------------------------
 
     try:
         db.commit()
 
-    except IntegrityError:
-
-        # -------------------------------------------------
-        # ROLLBACK FAILED TRANSACTION
-        # -------------------------------------------------
-
-        # If PostgreSQL rejects the INSERT, the SQLAlchemy
-        # session must be rolled back before it can safely
-        # be used again.
-
+    except IntegrityError as exc:
         db.rollback()
 
-
-        # -------------------------------------------------
-        # DATABASE-LEVEL DUPLICATE PROTECTION
-        # -------------------------------------------------
-
-        # We already checked for duplicate email above.
+        # The database UNIQUE constraint protects
+        # against concurrent duplicate registrations.
         #
-        # However, two requests could theoretically arrive
-        # at almost exactly the same time:
-        #
-        # Request A:
-        #     SELECT email -> not found
-        #
-        # Request B:
-        #     SELECT email -> not found
-        #
-        # Both then attempt INSERT.
-        #
-        # PostgreSQL's UNIQUE constraint is therefore our
-        # final protection against duplicate emails.
+        # This response assumes the only expected
+        # integrity conflict here is duplicate email.
 
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Email already exists",
-        )
+        ) from exc
 
-
-    # =====================================================
-    # REFRESH DATABASE-GENERATED VALUES
-    # =====================================================
-
-    # PostgreSQL generates values such as the primary-key ID.
-    #
-    # refresh() reloads the record from PostgreSQL so our
-    # Python object contains those database-generated values.
+    # -----------------------------------------------------
+    # STEP 7 — REFRESH DATABASE VALUES
+    # -----------------------------------------------------
 
     db.refresh(record)
 
+    # -----------------------------------------------------
+    # STEP 8 — RETURN SAFE RESPONSE
+    # -----------------------------------------------------
 
-    # =====================================================
-    # RETURN SAFE USER RESPONSE
-    # =====================================================
-
-    # FastAPI converts this SQLAlchemy object using:
-    #
-    #     response_model=UserResponse
-    #
-    # UserResponse deliberately excludes:
-    #
-    #     password
-    #     password_hash
-    #
-    # Therefore neither value is exposed to the client.
+    # UserResponse excludes password_hash.
 
     return record
 
+
 # =========================================================
-# LOGIN
+# 4. LOGIN
 # POST /auth/login
 # =========================================================
 
@@ -320,87 +219,110 @@ def login(
     db: Session = Depends(get_db),
 ):
     """
-    Authenticate a user and return a JWT access token.
+    Authenticate a user and issue a JWT.
 
-    Authentication flow:
+    Workflow:
+        1. Normalize email.
+        2. Find user in PostgreSQL.
+        3. Verify password.
+        4. Read the user's trusted database role.
+        5. Generate a signed JWT.
+        6. Return access token.
 
-        validate request
-            ↓
-        normalize email
-            ↓
-        find user
-            ↓
-        verify password
-            ↓
-        create JWT
-            ↓
-        return access token
+    IMPORTANT:
+        The role must come from the authenticated
+        User database record.
+
+        Never allow the login request to choose
+        or override the user's role.
     """
 
     # -----------------------------------------------------
-    # NORMALIZE EMAIL
+    # STEP 1 — NORMALIZE EMAIL
     # -----------------------------------------------------
 
-    email = str(
-        credentials.email
-    ).strip().lower()
-
+    email = str(credentials.email).strip().lower()
 
     # -----------------------------------------------------
-    # FIND USER
+    # STEP 2 — FIND USER
     # -----------------------------------------------------
 
     record = db.scalar(
-        select(User).where(
-            User.email == email
-        )
+        select(User).where(User.email == email)
     )
 
-
     # -----------------------------------------------------
-    # INVALID EMAIL
+    # STEP 3 — VALIDATE CREDENTIALS
     # -----------------------------------------------------
 
-    # We deliberately use the same error message for:
-    #
-    #     unknown email
-    #     wrong password
-    #
-    # This avoids unnecessarily revealing whether a
-    # particular email address has an account.
+    # Use the same public error for unknown users
+    # and incorrect passwords.
+
+    invalid_credentials = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid email or password",
+        headers={
+            "WWW-Authenticate": "Bearer",
+        },
+    )
 
     if record is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password",
-        )
-
-
-    # -----------------------------------------------------
-    # VERIFY PASSWORD
-    # -----------------------------------------------------
+        raise invalid_credentials
 
     if not verify_password(
         credentials.password,
         record.password_hash,
     ):
+        raise invalid_credentials
+
+    # -----------------------------------------------------
+    # STEP 4 — READ TRUSTED USER ROLE
+    # -----------------------------------------------------
+
+    # The SQLAlchemy User model stores the role as:
+    #
+    #   RENTER
+    #   OWNER
+    #   ADMIN
+    #
+    # The Vehicle Service uses this claim for RBAC.
+
+    role = record.role
+
+    if role not in {
+        UserRole.RENTER.value,
+        UserRole.OWNER.value,
+        UserRole.ADMIN.value,
+    }:
+        # An unexpected database role is a server-side
+        # identity configuration problem.
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="User role configuration is invalid",
         )
 
+    # -----------------------------------------------------
+    # STEP 5 — GENERATE JWT
+    # -----------------------------------------------------
 
-    # -----------------------------------------------------
-    # CREATE JWT
-    # -----------------------------------------------------
+    # CRITICAL PROJECT 5 INTEGRATION UPDATE:
+    #
+    # Previously:
+    #
+    # create_access_token(subject=str(record.id))
+    #
+    # Now include the role from PostgreSQL.
+    #
+    # security.py must support the role argument
+    # and place it in the signed JWT payload.
 
     access_token = create_access_token(
-        subject=str(record.id)
+        subject=str(record.id),
+        role=role,
     )
 
-
     # -----------------------------------------------------
-    # RETURN TOKEN
+    # STEP 6 — RETURN TOKEN
     # -----------------------------------------------------
 
     return TokenResponse(
@@ -408,8 +330,9 @@ def login(
         token_type="bearer",
     )
 
+
 # =========================================================
-# CURRENT AUTHENTICATED USER
+# 5. AUTHENTICATED USER
 # GET /auth/me
 # =========================================================
 
@@ -422,17 +345,19 @@ def get_authenticated_user(
     current_user: User = Depends(get_current_user),
 ):
     """
-    Return the currently authenticated user.
+    Return the authenticated user's information.
 
-    The client must provide:
-
+    Requires:
         Authorization: Bearer <access_token>
 
-    get_current_user() validates the JWT and loads
-    the corresponding User from PostgreSQL.
+    get_current_user():
+        - Validates JWT signature.
+        - Validates token expiration.
+        - Extracts the user ID.
+        - Loads the user from PostgreSQL.
 
-    UserResponse ensures sensitive fields such as
-    password_hash are never returned.
+    UserResponse prevents password hashes
+    from being returned.
     """
 
     return current_user
